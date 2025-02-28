@@ -2,6 +2,8 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const Treatment = require('./models/Treatment');
 const Appointment = require('./models/Appointment');
@@ -11,7 +13,10 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  credentials: true
+}));
 app.use(express.json());
 
 // MongoDB Connection
@@ -20,7 +25,156 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://rahul:rahul@cluster0.
   useUnifiedTopology: true
 });
 
-// Routes
+// Add to server.js
+const cloudinary = require('cloudinary').v2;
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Cloudinary configuration
+const cloudinaryConfig = {
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+};
+
+console.log('Cloudinary Config:', {
+  cloud_name: cloudinaryConfig.cloud_name,
+  api_key: cloudinaryConfig.api_key,
+  api_secret: cloudinaryConfig.api_secret ? '***' : 'missing'
+});
+
+cloudinary.config(cloudinaryConfig);
+
+// Update userSchema in server.js
+const userSchema = new mongoose.Schema({
+  name: String,
+  email: { type: String, unique: true },
+  password: String,
+  profilePhoto: String
+});
+const User = mongoose.model('User', userSchema);
+
+// Authentication middleware
+const auth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization').replace('Bearer ', '');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Please authenticate' });
+  }
+};
+
+// Apply auth middleware to protected routes
+app.use('/api/profile', auth);
+app.use('/api/upload-profile-photo', auth);
+
+// Profile photo upload endpoint
+app.post('/api/upload-profile-photo', auth, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image file provided' });
+    }
+
+    // Create a unique filename
+    const uniqueFilename = `profile_${req.user.id}_${Date.now()}`;
+
+    // Convert buffer to base64 and create data URI
+    const base64String = req.file.buffer.toString('base64');
+    const uploadStr = `data:${req.file.mimetype};base64,${base64String}`;
+
+    // Prepare upload options
+    const uploadOptions = {
+      folder: 'profile_photos',
+      public_id: uniqueFilename,
+      overwrite: true,
+      resource_type: 'auto'
+    };
+
+    console.log('Attempting upload with options:', uploadOptions);
+
+    const result = await cloudinary.uploader.upload(uploadStr, uploadOptions);
+
+    console.log('Upload successful:', result.secure_url);
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { profilePhoto: result.secure_url },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({ 
+      imageUrl: result.secure_url,
+      message: 'Profile photo updated successfully',
+      user: user
+    });
+  } catch (error) {
+    console.error('Upload error details:', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack
+    });
+
+    res.status(500).json({ 
+      message: 'Error uploading image. Please try again.',
+      error: error.message 
+    });
+  }
+});
+
+// Get profile endpoint
+app.get('/api/profile', async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    res.json(user);
+    console.log(user);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Auth Routes
+app.post('/api/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = new User({ name, email, password: hashedPassword });
+    await user.save();
+    res.status(201).json({ message: 'User registered successfully' });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: 'User not found' });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'your-secret-key');
+    res.json({ 
+      token,
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email,
+        profilePhoto: user.profilePhoto 
+      } 
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // Treatments
 app.get('/api/treatments', async (req, res) => {
   try {
