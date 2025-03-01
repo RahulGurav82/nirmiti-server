@@ -215,14 +215,30 @@ app.get('/api/appointments', async (req, res) => {
 });
 
 app.post('/api/appointments', async (req, res) => {
-  const appointment = new Appointment(req.body);
   try {
-    const newAppointment = await appointment.save();
-    res.status(201).json(newAppointment);
+    const { name, email, phone, date, time, treatment, message } = req.body;
+
+    // Convert time string ("04:00:00") into a valid Date object
+    const formattedTime = new Date(`1970-01-01T${time}`);
+
+    const appointment = new Appointment({
+      name,
+      email,
+      phone,
+      date: new Date(date), // Convert to Date object
+      time: formattedTime, // Store valid Date object
+      treatment,
+      message
+    });
+
+    await appointment.save();
+    res.status(201).json({ message: 'Appointment booked successfully' });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
+
+
 
 app.patch('/api/appointments/:id', async (req, res) => {
   try {
